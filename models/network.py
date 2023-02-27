@@ -79,7 +79,7 @@ class decoderRender(nn.Module):
 
         x1, x2, x3, x4, x5, x = feat
         d1, d2, d3, d4, d5 = feat_brdf
-        light_feat = self.light_mapping(light).view(bs, 128, 1, 1).expand(bs, 128, 4, 4)
+        light_feat = self.light_mapping(light).view(bs, 128, 1, 1).expand(bs, 128, 8, 8)
         input = torch.cat([x, light_feat], dim=1)
 
         x_d1 = F.relu( self.dbn0(self.dconv0(input) ), True)
@@ -154,7 +154,7 @@ class envmapInitial(nn.Module):
     def __init__(self, numCoef=9):
         super(envmapInitial, self).__init__()
         self.conv =nn.Conv2d(in_channels = 512, out_channels=1024, kernel_size=4, padding=0, stride=1)
-        # self.bn = nn.BatchNorm2d(1024)
+        #self.bn = nn.BatchNorm2d(1024)
         self.bn = nn.InstanceNorm2d(1024)
         self.numCoef = numCoef
 
@@ -215,7 +215,7 @@ class RefineDecoderRender(nn.Module):
 
         batch_size = light.size(0)
         light = light.unsqueeze(2).unsqueeze(3)
-        light = light.expand((batch_size, self.litc, 64, 64))
+        light = light.expand((batch_size, self.litc, 128, 128))
 
         x3 = torch.cat([x3, light], dim=1)
         x3 = self.dres1(x3)

@@ -41,7 +41,8 @@ decoderRef2_brdf = nn.DataParallel(network.RefineDecoderBRDF(), device_ids=opts.
 decoderRef2_render = nn.DataParallel(network.RefineDecoderRender(litc=30), device_ids=opts.gpu_id).cuda()
 env_cas2predictor = nn.DataParallel(network.RefineDecoderEnv(), device_ids=opts.gpu_id).cuda()
 
-render_layer = renderer.RenderLayerPointLightEnvTorch()
+sz = 512
+render_layer = renderer.RenderLayerPointLightEnvTorch(imSize=sz)
 
 def _fix(model):
     model.eval()
@@ -119,7 +120,7 @@ def gen_circular_lights(theta=np.pi * angle / 180, samples=120):
 def make_image_under_pt_and_env(A, N, R, D, S, light, env, bg):
     image_pt = render_layer.forward_batch(A, N, R, D, S, light) * S
     image_env = render_layer.forward_env(A, N, R, S, env) + bg
-    image_pe = 2 * (image_pt + image_env) - 1
+    image_pe = 2 * (image_pt) - 1
     image_pe = torch.clamp_(image_pe, -1, 1)
     return image_pe
 
@@ -142,17 +143,17 @@ for _i in range(len(seg_list)):
     img_name = image_list[_i]
     seg_name = seg_list[_i]
 
-    seg = np.array(Image.open(seg_name), dtype=np.float32) 
-    seg = cv2.resize(seg, (256, 256))
+    seg = np.array(Image.open(seg_name).convert('RGB'), dtype=np.float32) 
+    seg = cv2.resize(seg, (sz, sz))
     seg = (seg - 127.5) / 127.5
     seg = np.transpose(seg, [2, 0, 1])
     seg = 0.5 * seg + 0.5
-    seg = (seg[0, :, :] > 0.999999).astype(dtype=np.int)
+    seg = (seg[0, :, :] > 0.5).astype(dtype=np.int)
     seg = ndimage.binary_erosion(seg, structure=np.ones((2, 2))).astype(dtype=np.float32)
     seg = seg[np.newaxis, :, :]
 
     img = np.array(Image.open(img_name), dtype=np.float32)[:, :, :3]
-    img = cv2.resize(img, (256, 256))
+    img = cv2.resize(img, (sz, sz))
     img = (img / 255.0) ** 2.2
     img = 2 * img - 1
     img = np.transpose(img, [2, 0, 1])
@@ -172,7 +173,9 @@ for _i in range(len(seg_list)):
 
     input = torch.cat([image, image * seg, seg], 1)
     init_feat = encoder(input)
-    env_pred = env_predictor(init_feat[-1])
+    print(init_feat[0].shape)
+    print(init_feat[-1].shape)
+    env_pred = env_predictor(init_feat[-1])#torch.cat([init_feat[-1], init_feat[-1]], 2))
 
     init_brdf_feat, init_brdf_pred = decoder_brdf(init_feat)
     albedo_pred, normal_pred, rough_pred, depth_pred = init_brdf_pred
@@ -180,10 +183,20 @@ for _i in range(len(seg_list)):
     relit_pred_list = []
     relit_predcas_list = []
     relit_predcas2_list = []
+    i =0
+    path = osp.join(save_path, 'case%d' % _i)
     for t in light_t:
         light_t_env = torch.cat([t, env_pred.view(image.size(0), -1)], 1)
         relit_pred = decoder_render(init_feat, init_brdf_feat, light_t_env) * seg + (2 * bg - 1) * (1 - seg)
         relit_render = make_image_under_pt_and_env(albedo_pred, normal_pred, rough_pred, depth_pred, seg, t, env_pred, bg)
+        relit_pred_list += [relit_pred]
+        relit_predcas_list += [relit_pred]
+        relit_predcas2_list += [relit_pred]
+        relit_render = .5 * (relit_render+1)
+        writeImageToFile(relit_render.clone(),     path + '/image_r0_%d.png' % (i))
+        i+=1
+        continue
+
 
         # Cas1
         cas_input = torch.cat([image, \
@@ -233,9 +246,9 @@ for _i in range(len(seg_list)):
         relit_predcas_list += [relit_caspred]
         relit_predcas2_list += [relit_cas2pred]
 
-    relit_pred_list = relit_pred_list[:-1]
-    relit_predcas_list = relit_predcas_list[:-1]
-    relit_predcas2_list = relit_predcas2_list[:-1]
+#    relit_pred_list = relit_pred_list[:-1]
+#    relit_predcas_list = relit_predcas_list[:-1]
+#    relit_predcas2_list = relit_predcas2_list[:-1]
     
     # ---------------- save BRDF reconstruction ------------------------
     albedo_save = 0.5 * (albedo_pred + 1) * seg
@@ -246,6 +259,10 @@ for _i in range(len(seg_list)):
     depth_save  = (depth_save - 0.25) / 0.8
     depth_save = depth_save.expand_as(albedo_save)
     brdf_save  = torch.cat([albedo_save, normal_save, rough_save, depth_save], dim=3)
+    albedo_pred_cas2 = albedo_pred_cas = albedo_pred
+    normal_pred_cas2 = normal_pred_cas = normal_pred
+    rough_pred_cas2 = rough_pred_cas = rough_pred
+    depth_pred_cas2 = depth_pred_cas = depth_pred
 
     albedo_save_cas = 0.5 * (albedo_pred_cas + 1) * seg
     normal_save_cas = 0.5 * (normal_pred_cas + 1) * seg
@@ -289,14 +306,14 @@ for _i in range(len(seg_list)):
     image_src = ((0.5 * (1 + image)) ** (1/2.2)).clamp_(0, 1).clone() 
     writeImageToFile(image_src, path + '/image_src.png')
 
-    for i in range(len(light_t)-1):
+    for i in range(len(light_t)):
         writeImageToFile(relit_preds[i].clone(),     path + '/image_c0_%d.png' % (i))
         writeImageToFile(relit_caspreds[i].clone(),  path + '/image_c1_%d.png' % (i))
         writeImageToFile(relit_cas2preds[i].clone(), path + '/image_c2_%d.png' % (i))
     
-    os.system('ffmpeg -framerate 24 -i {}/image_c0_\%d.png -c:v libx264 -loglevel panic -pix_fmt yuv420p {}/video_c0.mp4'.format(
+    os.system('ffmpeg -framerate 24 -y -i {}/image_c0_\%d.png -c:v libx264 -loglevel panic -pix_fmt yuv420p {}/video_c0.mp4'.format(
                 path, path))
-    os.system('ffmpeg -framerate 24 -i {}/image_c1_\%d.png -c:v libx264 -loglevel panic -pix_fmt yuv420p {}/video_c1.mp4'.format(
+    os.system('ffmpeg -framerate 24 -y -i {}/image_c1_\%d.png -c:v libx264 -loglevel panic -pix_fmt yuv420p {}/video_c1.mp4'.format(
                 path, path))
-    os.system('ffmpeg -framerate 24 -i {}/image_c2_\%d.png -c:v libx264 -loglevel panic -pix_fmt yuv420p {}/video_c2.mp4'.format(
+    os.system('ffmpeg -framerate 24 -y -i {}/image_c2_\%d.png -c:v libx264 -loglevel panic -pix_fmt yuv420p {}/video_c2.mp4'.format(
                 path, path))

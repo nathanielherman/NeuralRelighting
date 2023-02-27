@@ -31,7 +31,8 @@ encoder = nn.DataParallel(network.encoderInitial(4), device_ids=opts.gpu_id).cud
 decoder_brdf = nn.DataParallel(network.decoderBRDF(), device_ids=opts.gpu_id).cuda()
 decoder_render = nn.DataParallel(network.decoderRender(), device_ids=opts.gpu_id).cuda()
 
-render_layer = renderer.RenderLayerPointLightTorch()
+sz = 512
+render_layer = renderer.RenderLayerPointLightTorch(imSize=sz)
 
 encoderRef = nn.DataParallel(network.RefineEncoder(), device_ids=opts.gpu_id).cuda()
 decoderRef_brdf = nn.DataParallel(network.RefineDecoderBRDF(), device_ids=opts.gpu_id).cuda()
@@ -134,29 +135,35 @@ def loadImage(imName, isGama=False):
     return im
 
 
-for _i in range(len(seg_list)):
+for _i in range(1,len(seg_list)):
 
     img_name = image_list[_i]
     seg_name = seg_list[_i]
 
-    seg = np.array(Image.open(seg_name), dtype=np.float32) 
-    seg = cv2.resize(seg, (256, 256))
+    seg = np.array(Image.open(seg_name).convert('RGB'), dtype=np.float32) 
+    seg = cv2.resize(seg, (sz, sz))
     seg = (seg - 127.5) / 127.5
     seg = np.transpose(seg, [2, 0, 1])
     seg = 0.5 * seg + 0.5
-    seg = (seg[0, :, :] > 0.999999).astype(dtype=np.int)
+    seg = (seg[0, :, :] > 0.5).astype(dtype=np.int)
     seg = ndimage.binary_erosion(seg, structure=np.ones((2, 2))).astype(dtype=np.float32)
     seg = seg[np.newaxis, :, :]
 
-    img = np.array(Image.open(img_name), dtype=np.float32)[:, :, :3]
-    img = cv2.resize(img, (256, 256))
+    i = Image.open(img_name)
+    print(i.size)
+    img = np.array(i, dtype=np.float32)[:, :, :3]
+    print(img.shape)
+    img = cv2.resize(img, (sz, sz))
+    print(img.shape)
     img = (img / 255.0) ** 2.2
     img = 2 * img - 1
     img = np.transpose(img, [2, 0, 1])
+    print(img.shape)
 
 
     seg = torch.from_numpy(seg).cuda().unsqueeze(0)
 
+    image_o = torch.from_numpy(img).cuda().unsqueeze(0)
     image_s = torch.from_numpy(img).cuda().unsqueeze(0) * seg
     light_s = torch.zeros(seg.size(0), 3).float().cuda().clamp(0, 1)
 
@@ -168,9 +175,12 @@ for _i in range(len(seg_list)):
     light_t += [light_s]
 
     input = torch.cat([image_s, seg], 1)
+    print('in', input.shape)
     init_feat = encoder(input)
+    print('init_feat[0]', init_feat[0].shape)
     init_brdf_feat, init_brdf_pred = decoder_brdf(init_feat)
     albedo_pred, normal_pred, rough_pred, depth_pred = init_brdf_pred
+    print(normal_pred.shape)
 
     relit_pred_list = []
     relit_predcas_list = []
@@ -271,6 +281,9 @@ for _i in range(len(seg_list)):
 
     image_src = ((0.5 * (1 + image_s)) ** (1/2.2)).clamp_(0, 1).clone() * seg
     writeImageToFile(image_src, path + '/image_src.png')
+
+    image_orig = ((0.5 * (1 + image_o)) ** (1/2.2)).clamp_(0, 1).clone()
+    writeImageToFile(image_orig, path + '/image_orig.png')
 
     for i in range(len(light_t)-1):
         writeImageToFile(relit_preds[i].clone(),     path + '/image_c0_%d.png' % (i))
